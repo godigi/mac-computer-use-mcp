@@ -44,10 +44,30 @@ def _take_screenshot():
             ["osascript", "-e", f'do shell script "screencapture -x {path}"'],
             capture_output=True,
         )
+    # Read image dimensions to compute the pixel→logical scale factor
+    sips = _run(["sips", "-g", "pixelWidth", "-g", "pixelHeight", path])
+    img_w = img_h = None
+    for line in sips.stdout.splitlines():
+        if "pixelWidth" in line:
+            img_w = int(line.split(":")[1].strip())
+        elif "pixelHeight" in line:
+            img_h = int(line.split(":")[1].strip())
+
     with open(path, "rb") as f:
         data = base64.b64encode(f.read()).decode()
     os.unlink(path)
-    return data
+
+    logical = _get_screen_size()
+    scale = round(img_w / logical["width"], 2) if img_w else None
+
+    return {
+        "data": data,
+        "img_w": img_w,
+        "img_h": img_h,
+        "logical_w": logical["width"],
+        "logical_h": logical["height"],
+        "scale": scale,
+    }
 
 
 def _click(x, y, button="left"):
@@ -382,7 +402,18 @@ async def list_tools():
 @app.call_tool()
 async def call_tool(name: str, arguments: dict):
     if name == "screenshot":
-        return [types.ImageContent(type="image", data=_take_screenshot(), mimeType="image/png")]
+        s = _take_screenshot()
+        note = (
+            f"Screenshot is {s['img_w']}×{s['img_h']} pixels "
+            f"(logical screen: {s['logical_w']}×{s['logical_h']} pts, scale: {s['scale']}×). "
+            f"To get the logical coordinate to pass to click/drag/scroll, "
+            f"divide image pixel coordinates by {s['scale']}. "
+            f"Example: image pixel (1000, 500) → click at ({round(1000/s['scale'])}, {round(500/s['scale'])})."
+        ) if s["scale"] else ""
+        result = [types.ImageContent(type="image", data=s["data"], mimeType="image/png")]
+        if note:
+            result.append(types.TextContent(type="text", text=note))
+        return result
 
     if name == "find_elements":
         result = _find_elements(arguments["app_name"], arguments.get("query"))
